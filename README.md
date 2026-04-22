@@ -44,5 +44,5 @@ To update the display every 5 minutes:
 ```bash
 crontab -e
 # Add the following line:
-*/5 * * * * /usr/bin/python3 /home/zero/solar_dashboard.py
+* * * * * /usr/bin/python3 /home/zero/solar_dashboard.py
 ```
