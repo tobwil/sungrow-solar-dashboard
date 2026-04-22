@@ -93,7 +93,7 @@ def main():
         draw.text((215, 74), 'kWh', font=f_tiny, fill=0)
 
         # Bottom Info
-        draw.text((10, 78), f'HOUSE: {load:.2f}kW | CONS TODAY: {c_today:.1f}kWh', font=f_small, fill=0)
+        draw.text((10, 78), f'HOUSE: {load:.2f}kW ', font=f_small, fill=0)
         
         batt_label = 'CHARGING' if batt < 0 else 'DISCHARGING' if batt > 0 else 'IDLE'
         draw.text((10, 92), f'BATT: {batt_label} ({int(soc)}% | {abs(batt):.2f} kW)', font=f_small, fill=0)
