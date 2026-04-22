@@ -14,23 +14,26 @@ from waveshare_epd import epd2in13_V4
 
 def get_sh8_data(ip):
     client = ModbusTcpClient(ip, port=502)
-    data = {'daily_yield': 0, 'active_power': 0, 'soc': 0, 'load_now': 0, 'grid_power': 0}
+    data = {'daily_yield': 0, 'soc': 0, 'load_now': 0, 'grid_power': 0, 'batt_power': 0}
     if client.connect():
         try:
-            # 13001 block
+            # SH8.0RT Hybrid Mapping (Registers 13001-13022)
             res_13 = client.read_input_registers(address=13001, count=22, slave=1)
             if not res_13.isError():
+                # 13001 (offset 0): Load Power (W)
                 data['load_now'] = res_13.registers[0] / 1000.0
-                p_val = res_13.registers[6] # 13007
-                data['active_power'] = abs(struct.unpack('h', struct.pack('H', p_val))[0]) / 1000.0
-                data['soc'] = res_13.registers[21] # 13022
-            
-            # 13009 Grid Power (1 W, signed: Negative=Export, Positive=Import)
-            res_g = client.read_input_registers(address=13009, count=1, slave=1)
-            if not res_g.isError():
-                g_val = struct.unpack('h', struct.pack('H', res_g.registers[0]))[0]
+                
+                # 13009 (offset 8): Grid Power (W, signed: Negative=Export, Positive=Import)
+                g_val = struct.unpack('h', struct.pack('H', res_13.registers[8]))[0]
                 data['grid_power'] = g_val / 1000.0
+                
+                # 13021 (offset 20): Battery Power (W, signed: Positive=Discharge, Negative=Charge)
+                b_val = struct.unpack('h', struct.pack('H', res_13.registers[20]))[0]
+                data['batt_power'] = b_val / 1000.0
 
+                # 13022 (offset 21): SOC (%)
+                data['soc'] = res_13.registers[21] / 10.0
+            
             # 5016 Block (Yield)
             res_5 = client.read_input_registers(address=5016, count=1, slave=1)
             if not res_5.isError():
@@ -43,13 +46,22 @@ def get_sh8_data(ip):
 
 def main():
     try:
-        d1 = get_sh8_data('192.168.178.151')
-        d2 = get_sh8_data('192.168.178.154')
+        d1 = get_sh8_data('192.168.178.151') # Master
+        d2 = get_sh8_data('192.168.178.154') # Slave
         
-        prod = d1['active_power'] + d2['active_power']
+        # Energy Balance Formula: PV = House - Grid - Battery (signed)
+        # Grid: Negative when exporting, positive when importing
+        # Battery: Positive when discharging, negative when charging
+        
+        load = d1['load_now'] + d2['load_now']
+        grid = d1['grid_power'] # Master meter usually sees total net
+        batt = d1['batt_power'] + d2['batt_power']
+        
+        # Calculate PV Production (House + absolute Export/Charge)
+        # Formula using signed: PV = Load - Grid - Battery
+        prod = max(0, load - grid - batt)
+        
         y_today = d1['daily_yield']
-        grid = d1['grid_power'] # Master usually manages grid connection
-        house = d1['load_now'] + d2['load_now']
         soc = max(d1['soc'], d2['soc'])
 
         # UI Update
@@ -70,25 +82,29 @@ def main():
         f_tiny = ImageFont.truetype(font_path, 9)
 
         # UI Layout
-        draw.text((10, 2), 'SH8.0RT HYBRID LIVE', font=f_title, fill=0)
+        draw.text((10, 2), 'SH8.0RT ENERGY BALANCE', font=f_title, fill=0)
         draw.line([10, 22, 240, 22], fill=0, width=1)
 
-        draw.text((10, 28), 'PRODUCTION (kW)', font=f_tiny, fill=0)
+        # Main Production (Calculated)
+        draw.text((10, 28), 'PV PRODUCTION (kW)', font=f_tiny, fill=0)
         draw.text((10, 38), f'{prod:.2f}', font=f_big, fill=0)
         
+        # Right Column: Yield and Grid
         draw.text((145, 28), 'YIELD TODAY', font=f_tiny, fill=0)
         draw.text((145, 38), f'{y_today:.1f}', font=f_med, fill=0)
         draw.text((215, 42), 'kWh', font=f_tiny, fill=0)
 
-        # Replacing 'Load Today' with Grid status
-        grid_label = 'EXPORTING' if grid < 0 else 'IMPORTING'
+        grid_label = 'EXPORT' if grid < 0 else 'IMPORT'
         draw.text((145, 60), f'GRID {grid_label}', font=f_tiny, fill=0)
         draw.text((145, 70), f'{abs(grid):.2f}', font=f_med, fill=0)
         draw.text((215, 74), 'kW', font=f_tiny, fill=0)
 
-        draw.text((10, 78), f'HOUSE LOAD: {house:.2f} kW', font=f_small, fill=0)
-        draw.text((10, 92), f'BATTERY SOC: {int(soc)}%', font=f_small, fill=0)
+        # Bottom Info
+        batt_label = 'CHARGING' if batt < 0 else 'DISCHARGING' if batt > 0 else 'IDLE'
+        draw.text((10, 78), f'HOUSE: {load:.2f}kW | BATT: {batt_label}', font=f_small, fill=0)
+        draw.text((10, 92), f'BATTERY SOC: {int(soc)}% ({abs(batt):.2f} kW)', font=f_small, fill=0)
         
+        # Battery Bar
         draw.rectangle([10, 108, 240, 115], outline=0, width=1)
         if soc > 0:
             fill_w = int(228 * (min(soc,100)/100.0))
@@ -97,7 +113,7 @@ def main():
         epd.display(epd.getbuffer(image))
         time.sleep(2)
         epd.sleep()
-        print(f'UI Updated: P={prod}kW, Y={y_today}kWh, G={grid}kW, L={house}kW, S={soc}%')
+        print(f'Sync Done: P={prod}kW, Y={y_today}kWh, G={grid}kW, L={load}kW, S={soc}%, B={batt}kW')
 
     except Exception as e:
         print(f'Error: {e}')
