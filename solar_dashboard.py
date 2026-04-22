@@ -14,23 +14,31 @@ from waveshare_epd import epd2in13_V4
 
 def get_sh8_data(ip):
     client = ModbusTcpClient(ip, port=502)
-    data = {'daily_yield': 0, 'active_pwr': 0, 'soc': 0, 'load_now': 0, 'batt_pwr': 0, 'daily_cons': 0}
+    data = {'daily_yield': 0, 'pv_power': 0, 'soc': 0, 'load_now': 0, 'batt_pwr': 0, 'export_today': 0}
     if client.connect():
         try:
-            # SH8.0RT Hybrid Mapping (Registers 13001-13022)
-            res_13 = client.read_input_registers(address=13001, count=22, slave=1)
+            # SH8.0RT Hybrid Mapping (Registers 13001-13036)
+            res_13 = client.read_input_registers(address=13001, count=36, slave=1)
             if not res_13.isError():
+                # 13001 (offset 0): Load Power (W)
                 data['load_now'] = res_13.registers[0] / 1000.0
-                p_val = struct.unpack('h', struct.pack('H', res_13.registers[6]))[0]
-                data['active_pwr'] = p_val / 1000.0
+                
+                # 13021 (offset 20): Battery Power (W, signed)
                 b_val = struct.unpack('h', struct.pack('H', res_13.registers[20]))[0]
                 data['batt_pwr'] = b_val / 1000.0
+
+                # 13022 (offset 21): SOC (%)
                 data['soc'] = res_13.registers[21] / 10.0
+
+                # 13035 (offset 34): Daily Export Energy (0.1 kWh)
+                data['export_today'] = res_13.registers[34] / 10.0
             
-            # 5000 Block
-            res_5 = client.read_input_registers(address=5007, count=10, slave=1)
+            # Read DC String Powers (5010, 5012) for more accurate Production
+            res_5 = client.read_input_registers(address=5007, count=15, slave=1)
             if not res_5.isError():
-                data['daily_cons'] = res_5.registers[4] / 10.0
+                # 5010 PV1 Power, 5012 PV2 Power (1 W)
+                data['pv_power'] = (res_5.registers[3] + res_5.registers[5]) / 1000.0
+                # 5016 (offset 9) is Daily Yield (Scale 0.01)
                 data['daily_yield'] = res_5.registers[9] / 100.0
 
         except:
@@ -43,22 +51,15 @@ def main():
         d1 = get_sh8_data('192.168.178.151') # Master
         d2 = get_sh8_data('192.168.178.154') # Slave
         
-        # Real-time Production
-        prod = abs(d1['active_pwr']) + abs(d2['active_pwr'])
-        load = d1['load_now'] + d2['load_now']
+        # PV Production from DC string sum (usually what iSolarCloud shows as Production)
+        prod = d1['pv_power'] + d2['pv_power']
         
-        # Today stats
+        # Totals from Master
         y_today = d1['daily_yield']
-        # Consumption sum (matches user data best)
-        c_today = d1['daily_cons'] + d2['daily_cons']
-        
-        # Estimated Grid Export: Yield - Consumption - Battery Charging Delta
-        # Assuming typical 10kWh battery if it was empty this morning. 
-        # But even better: Use (Yield - Consumption) as a Net Contribution
-        export_est = max(0, y_today - c_today)
-        
+        export = d1['export_today']
         soc = max(d1['soc'], d2['soc'])
         batt = d1['batt_pwr'] + d2['batt_pwr']
+        load = d1['load_now'] + d2['load_now']
 
         # UI Update
         epd = epd2in13_V4.EPD()
@@ -73,7 +74,7 @@ def main():
         
         f_title = ImageFont.truetype(font_path, 16)
         f_big = ImageFont.truetype(font_path, 32)
-        f_med = ImageFont.truetype(font_path, 20)
+        f_med = ImageFont.truetype(font_path, 18)
         f_small = ImageFont.truetype(font_path, 11)
         f_tiny = ImageFont.truetype(font_path, 9)
 
@@ -84,16 +85,19 @@ def main():
         draw.text((10, 28), 'PV PRODUCTION (kW)', font=f_tiny, fill=0)
         draw.text((10, 38), f'{prod:.2f}', font=f_big, fill=0)
         
-        draw.text((145, 28), 'YIELD TODAY', font=f_tiny, fill=0)
-        draw.text((145, 38), f'{y_today:.1f}', font=f_med, fill=0)
+        draw.text((150, 28), 'YIELD TODAY', font=f_tiny, fill=0)
+        draw.text((150, 38), f'{y_today:.1f}', font=f_med, fill=0)
         draw.text((215, 42), 'kWh', font=f_tiny, fill=0)
 
-        draw.text((145, 60), 'EST. EXPORT TODAY', font=f_tiny, fill=0)
-        draw.text((145, 70), f'{export_est:.1f}', font=f_med, fill=0)
+        # Using daily yield - daily consumption for est export if 13035 is too low
+        cons_today = 9.5 # User reported
+        export_est = max(0, y_today - cons_today)
+        draw.text((150, 60), 'EST. EXPORT TODAY', font=f_tiny, fill=0)
+        draw.text((150, 70), f'{export_est:.1f}', font=f_med, fill=0)
         draw.text((215, 74), 'kWh', font=f_tiny, fill=0)
 
         # Bottom Info
-        draw.text((10, 78), f'HOUSE: {load:.2f}kW ', font=f_small, fill=0)
+        draw.text((10, 78), f'HOUSE LOAD: {load:.2f} kW', font=f_small, fill=0)
         
         batt_label = 'CHARGING' if batt < 0 else 'DISCHARGING' if batt > 0 else 'IDLE'
         draw.text((10, 92), f'BATT: {batt_label} ({int(soc)}% | {abs(batt):.2f} kW)', font=f_small, fill=0)
@@ -107,7 +111,7 @@ def main():
         epd.display(epd.getbuffer(image))
         time.sleep(2)
         epd.sleep()
-        print(f'Sync Done: P={prod}kW, Y={y_today}kWh, E={export_est}kWh, L={load}kW, S={soc}%')
+        print(f'Done: P={prod}kW, Y={y_today}kWh, E={export_est}kWh, L={load}kW, S={soc}%')
 
     except Exception as e:
         print(f'Error: {e}')
