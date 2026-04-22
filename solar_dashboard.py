@@ -48,7 +48,7 @@ def main():
         d2 = get_sh8_data('192.168.178.154') # Slave
         
         # PV Production from DC string sum
-        prod = d1['pv_power'] + d2['pv_power']
+        prod = (d1[.pv_power.] + d2[.pv_power.]) * 0.9
         
         # House Load = Combined AC Active Power Output (where the EV load shows up)
         load = d1['active_pwr'] + d2['active_pwr']

@@ -19,7 +19,7 @@ Based on field testing with SH8.0RT Hybrid models:
 | Battery SOC | 13022 | % | 0.1 | Unsigned 16-bit |
 
 ### Key Logic:
-- **PV Production:** Calculated as the sum of Total Active Power (Register 13007) from both inverters.
+- **PV Production:** Calculated as the sum of DC String Powers * 0.9 (Inverter Efficiency) (Register 13007) from both inverters.
 - **System Stats:** Yield, Consumption, and House Load are read from the Master inverter (192.168.178.151).
 - **Battery SOC:** Read from the master inverter (which manages the battery).
 
